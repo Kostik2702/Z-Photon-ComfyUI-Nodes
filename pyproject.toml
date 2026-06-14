@@ -1,0 +1,9 @@
+[project]
+name = "comfyui-zphoton"
+description = "Photorealism-focused sampling nodes for Z-Image / Z-Image-Turbo: analytic restart schedules, detail boost, seed variation, hires refiner."
+version = "0.1.0"
+license = { text = "MIT" }
+
+[tool.comfy]
+PublisherId = ""
+DisplayName = "ZPhoton Nodes"
