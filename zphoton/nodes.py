@@ -43,6 +43,15 @@ _VARIETY = {
     "high":   (1.00, 1.25),
 }
 
+# DEV variety level -> a (mid-trajectory LF-recompose strength).
+# corr with original composition = sqrt(1 - a^2). See research/01_RESEARCH_variety.md.
+_VARIETY_DEV = {
+    "off":    0.00,
+    "low":    0.30,
+    "medium": 0.55,
+    "high":   0.80,
+}
+
 # look -> initial-noise contrast offset (true-to-life vs punchy)
 _LOOKS = {
     "natural (true-to-life)": -0.10,
@@ -126,6 +135,58 @@ class ZPhotonSampler:
                            composition_model=clean_model,
                            composition_end=0.85,
                            neg_cfg=neg_cfg, neg_cfg_end=0.70)
+        return (out,)
+
+
+class ZPhotonSamplerDev:
+    """DEV copy of ZPhoton Sampler with the v2 variety implementation
+    (mid-trajectory low-frequency recompose). Kept side-by-side with the
+    original ZPhoton Sampler for A/B comparison - the original is unchanged.
+    The variety control changes composition (pose/framing/placement) without
+    changing style/texture; see research/01_RESEARCH_variety.md."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "positive": ("CONDITIONING",),
+                "latent": ("LATENT",),
+                "seed": ("INT", {"default": 0, "min": 0, "max": MAX_SEED, "control_after_generate": True}),
+                "preset": (list(_PRESETS.keys()), {"default": "turbo / quality (14 steps)", "tooltip": "turbo presets for Z-Image-Turbo (cfg 1, negative ignored); base presets for Z-Image Base (cfg 4, connect negative)."}),
+                "variety": (list(_VARIETY_DEV.keys()), {"default": "off", "tooltip": "Composition variety (v2): mid-trajectory low-frequency recompose. Changes pose/framing/placement, preserves style/texture. off/low/medium/high -> a 0/0.30/0.55/0.80."}),
+            },
+            "optional": {
+                "negative": ("CONDITIONING", {"tooltip": "Used by base presets (cfg > 1). Ignored by turbo presets."}),
+                "clean_model": ("MODEL", {"tooltip": "Model WITHOUT LoRAs (checkpoint output). If connected, the composition phase (high sigmas) runs on it and LoRAs apply only in the identity/detail phase - prevents LoRA mutations."}),
+                "look": (list(_LOOKS.keys()), {"default": "standard", "tooltip": "natural = true-to-life colors; vivid = extra punch."}),
+            },
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "sample"
+    CATEGORY = CATEGORY
+
+    def sample(self, model, positive, latent, seed, preset, variety,
+               negative=None, clean_model=None, look="standard"):
+        p = _PRESETS[preset]
+        a = _VARIETY_DEV[variety]
+        sigmas = _build_sigmas(p["mode"], p["steps"], 3.0, True)
+        lat = comfy.sample.fix_empty_latent_channels(model, latent["samples"])
+        # v2: clean init noise (no input-noise variety / lf_boost); variety is
+        # applied in the latent on the mid trajectory instead.
+        noise = prepare_noise(lat.shape, seed,
+                              contrast=p["contrast"] + _LOOKS.get(look, 0.0))
+        vseed = (int(seed) ^ 0x9E3779B97F4A7C15) & MAX_SEED
+        neg_cfg = 2.5 if (p["mode"] == "turbo" and negative is not None) else 1.0
+        out = run_sampling(model, positive, negative, latent, sigmas,
+                           seed=seed, cfg=p["cfg"], noise=noise,
+                           detail_amount=p["detail"], order=1,
+                           composition_model=clean_model,
+                           composition_end=0.85,
+                           neg_cfg=neg_cfg, neg_cfg_end=0.70,
+                           variety_a=a, variety_seed=vseed,
+                           variety_end=0.90, variety_cutoff=0.25)
         return (out,)
 
 
@@ -414,6 +475,7 @@ class ZPhotonTone:
 
 NODE_CLASS_MAPPINGS = {
     "ZPhotonSampler": ZPhotonSampler,
+    "ZPhotonSamplerDev": ZPhotonSamplerDev,
     "ZPhotonTone": ZPhotonTone,
     "ZPhotonSamplerAdvanced": ZPhotonSamplerAdvanced,
     "ZPhotonEncode": ZPhotonEncode,
@@ -425,6 +487,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "ZPhotonSampler": "ZPhoton Sampler",
+    "ZPhotonSamplerDev": "ZPhoton Sampler (dev)",
     "ZPhotonTone": "ZPhoton Tone (true-to-life)",
     "ZPhotonSamplerAdvanced": "ZPhoton Sampler (Advanced)",
     "ZPhotonEncode": "ZPhoton Encode",
