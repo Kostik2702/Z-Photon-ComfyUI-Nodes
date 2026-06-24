@@ -163,7 +163,9 @@ def run_sampling(model, positive, negative, latent_dict, sigmas, *,
                  detail_amount=0.0, detail_start=0.15, detail_end=0.95,
                  detail_peak=0.6, order=1, grain=0.0,
                  composition_model=None, composition_end=0.85,
-                 neg_cfg=1.0, neg_cfg_end=0.80):
+                 neg_cfg=1.0, neg_cfg_end=0.80,
+                 variety_a=0.0, variety_seed=0, variety_end=0.90,
+                 variety_cutoff=0.25):
     """Shared entry point for all ZPhoton sampler nodes.
 
     Multi-phase execution (segments share boundary sigmas, so ComfyUI's
@@ -175,6 +177,11 @@ def run_sampling(model, positive, negative, latent_dict, sigmas, *,
       provided negative - this gives a WORKING negative prompt on the
       distilled Turbo model (cfg 1 normally ignores it) at the cost of a
       few extra model calls on the early steps only.
+    * variety_a > 0: mid-trajectory composition variety. At the schedule node
+      just below `variety_end` (composition already set) the latent's
+      low-frequency band is rotated toward a fresh seed (variance-preserving,
+      texture/style preserved). See zphoton/variety.py. variety_a == 0 leaves
+      this path completely inactive (behavior identical to without it).
     """
     kw = dict(detail_amount=detail_amount, detail_start=detail_start,
               detail_end=detail_end, detail_peak=detail_peak,
@@ -190,13 +197,20 @@ def run_sampling(model, positive, negative, latent_dict, sigmas, *,
 
     use_comp = composition_model is not None
     use_neg = (neg_cfg > 1.0 + 1e-3) and (negative is not None) and (cfg <= 1.0 + 1e-3)
+    use_variety = variety_a > 0.0
 
     split_idxs = set()
+    variety_idx = None
     for th, flag in ((composition_end, use_comp), (neg_cfg_end, use_neg)):
         if flag:
             i = first_idx_below(th)
             if i is not None and 0 < i < len(sig_list) - 1:
                 split_idxs.add(i)
+    if use_variety:
+        i = first_idx_below(variety_end)
+        if i is not None and 0 < i < len(sig_list) - 1:
+            split_idxs.add(i)
+            variety_idx = i
 
     if not split_idxs and not (use_neg and first_idx_below(neg_cfg_end) is None):
         return _run_one(model, positive, negative, latent_dict, sigmas,
@@ -209,6 +223,12 @@ def run_sampling(model, positive, negative, latent_dict, sigmas, *,
         a, b = bounds[k], bounds[k + 1]
         if a == b:
             continue
+        # apply mid-trajectory variety at the variety boundary (once)
+        if variety_idx is not None and a == variety_idx:
+            from .variety import lf_recompose
+            cur = dict(cur)
+            cur["samples"] = lf_recompose(cur["samples"], seed_v=variety_seed,
+                                          a=variety_a, cutoff=variety_cutoff)
         seg = sigmas[a:b + 1]
         sig_start = sig_list[a]
         m = composition_model if (use_comp and sig_start > composition_end) else model
